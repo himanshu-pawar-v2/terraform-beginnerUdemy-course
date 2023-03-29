@@ -1,0 +1,90 @@
+terraform {
+  required_providers {
+aws = {
+source = "hashicorp/aws"
+version = "~> 4.1"
+}
+}
+}
+provider "aws" {
+  region = "ap-south-1"
+}
+resource "aws_s3_bucket" "static-site-bucket" {
+  bucket = "static-bucket"
+  acl    = "public-read"
+  website {
+    index_document = "index.html"
+  }
+}
+resource "aws_cloudfront_distribution" "static-distribution" {
+  origin {
+    domain_name = "${aws_s3_bucket.static-site-bucket.id}"
+    origin_id   = "s3-${aws_s3_bucket.static-site-bucket.id}"
+  }
+
+  enabled             = true
+  is_ipv6_enabled     = true
+  default_root_object = "index.html"
+
+  default_cache_behavior {
+    allowed_methods  = ["GET", "HEAD"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "s3-${aws_s3_bucket.static-site-bucket.id}"
+    forwarded_values {
+      query_string = false
+
+      cookies {
+        forward = "none"
+      }
+    }
+
+    viewer_protocol_policy = "redirect-to-https"
+    min_ttl                = 0
+    default_ttl            = 600
+    max_ttl                = 3600
+  }
+  price_class = "PriceClass_All"
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+}
+resource "aws_instance" "httpd-instance" {
+  ami           = "ami-09ba48996007c8b50"
+  instance_type = "t2.micro"
+  key_name      = "PracticeKP-1"
+  subnet_id     = "subnet-0035a5930059a1392"
+
+  user_data = <<-EOF
+              
+              yum update -y
+              yum install httpd tomcat -y
+
+              cat > /etc/httpd/conf.d/tomcat-proxy.conf <<EOF2
+              <VirtualHost *:80>
+                  ServerName staticsiteins3.com
+                  ProxyRequests Off
+                  ProxyPass / ajp://localhost:8009/
+                  ProxyPassReverse / ajp://localhost:8009/
+              </VirtualHost>
+              EOF2
+
+              systemctl start httpd
+              systemctl enable httpd
+              EOF
+}
+
+resource "aws_security_group_rule" "sg-rule" {
+  type        = "ingress"
+  from_port   = 80
+  to_port     = 80
+  protocol    = "tcp"
+  cidr_blocks = ["0.0.0.0/0"]
+  security_group_id = "${aws_instance.httpd-instance.security_groups}"
+}
